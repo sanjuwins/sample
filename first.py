@@ -4,10 +4,9 @@ from openai import OpenAI
 
 
 
-openai.api_key="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"
-
+openai.api_key=""
 # def ask_question_2(question: str) -> str:
-#     client = OpenAI( api_key="sk-proj-TvRz3IU7rrvpoHZm2RPLT3BlbkFJ0ZmcoyLPqE7uhqn5fuSC",)
+#     client = OpenAI( api_key="",)
 
 #     response = client.responses.create(
 #         model="gpt-4o",
@@ -19,7 +18,7 @@ openai.api_key="sk-proj-5Fw4IyQQltTwu6PIKq63q049UwpAG3jNjKYuXhhhE5Ju-pHncJuoUYDN
 
 def ask_question(question: str) -> str:
     # openai.api_key = "YOUR_OPENAI_API_KEY"  # Replace with your actual API key
-    openai.api_key="sk-proj-TvRz3IU7rrvpoHZm2RPLT3BlbkFJ0ZmcoyLPqE7uhqn5fuSC"
+    openai.api_key=""
 
     response = openai.ChatCompletion.create(
         # model="gpt-4",  # or "gpt-3.5-turbo"
