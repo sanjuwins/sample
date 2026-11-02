@@ -1,0 +1,283 @@
+--- Page 1 ---
+Assignment 2 — From “It Runs in Parallel” to “I Know Why It
+Doesn’t Scale”
+Covers: Week 3 (OpenMP & Parallelising ML Kernels) + Week 4 (MPI for Distributed ML Sys-
+tems)
+Effort budget: ~3 hours total, all-inclusive (code + report)
+Deliverables: 3–4 original code files you write yourself + 1 short report (PDF or Markdown, 1.5–2
+pages)
+T ools needed: Python 3.8+, NumPy, a C compiler with OpenMP support, and an MPI imple-
+mentation (Open MPI or MPICH), plus mpi4py if you want to write Part B in Python. No GPU
+required.
+One-time setup (do this before you start the clock):
+# macOS (Apple clang needs libomp for OpenMP):
+brew install libomp open-mpi && pip install mpi4py
+# Ubuntu / Debian:
+sudo apt install build-essential openmpi-bin libopenmpi-dev && pip install mpi4py
+# Cluster: gcc already has -fopenmp; module load openmpi
+On macOS, compile OpenMP code with clang -O2 -Xpreprocessor -fopenmp -I$(brew
+--prefix libomp)/include -L$(brew --prefix libomp)/lib -lomp file.c. On Linux,
+use gcc -O2 -fopenmp file.c. Check that you really are running threads : print
+omp_get_max_threads() at start-up. A program that compiles without OpenMP runs serially
+and still prints numbers, but they are meaningless for this assignment.
+Ground rule: write your own code. As in Assignment 1, you are asked to implement the
+Week 3/4 concepts yourself, not to run or patch the course’s example scripts. Do not open or copy
+from examples/week3_openmp/ or examples/week4_mpi/ while completing Parts A–C. Work from
+the slides and the spec below. Those scripts are there to sanity-check your numbers afterward.
+Reusing your own Assignment 1 code is allowed, and Part C and Part D require it.
+Why this assignment
+In Assignment 1, Part B, you estimated wall-clock time on 1,024 GPUs by assuming perfect
+linear scaling , with a promise that Week 4 would show why that’s optimistic. This assignment
+delivers on that promise.
+Week 3 moved from measuring one node to programming it: threads, data scoping, races, reductions,
+and tiling a GEMM so that it actually uses the cache. Week 4 went across nodes: message
+passing, deadlock, collectives, the 𝛼–𝛽 cost model, ring all-reduce, and data-parallel training as
+“local gradients + all-reduce” . The thread that runs through both weeks is the reduction pattern .
+A reduction(+:sum) inside one node becomes an MPI_Allreduce across the cluster.
+The course discipline hasn’t changed:
+measure → classify → change one thing → re-measure
+What’s new is that “classify” now has a third answer besides compute-bound and memory-bound:
+synchronisation/communication-bound.
+1
+
+--- Page 2 ---
+
+Part A — OpenMP: first correct, then fast (60 min)
+File to submit: omp_kernels.c
+Write a single C program (one main, with a command-line argument or a #define to choose the
+section if you like) that does the following.
+A1. Correctness: the same dot product, four ways
+Compute the dot product of two double vectors of length 𝑁 = 2 24. Initialise a[i] = 1.0 and
+b[i] = 0.5 so that the exact answer is 𝑁 /2 and can be represented exactly. Implement:
+1. Racy: #pragma omp parallel for with a shared sum += a[i]*b[i]. This is the deliberate
+bug.
+2. critical: the same loop with the update inside #pragma omp critical.
+3. atomic: the same loop with #pragma omp atomic.
+4. reduction: #pragma omp parallel for reduction(+:sum).
+For each one, print the result, its absolute error against 𝑁 /2, and the wall-clock time
+(omp_get_wtime()). Run the whole program at least 3 times with OMP_NUM_THREADS set
+to your core count, and record how the racy answer changes between runs. (If critical takes
+more than ~10 s, you may use a smaller 𝑁 for variants 2–3 only. Say so in the report.)
+
+A2. Speed: naive vs parallel vs tiled GEMM
+Implement 𝐶 = 𝐴 ⋅ 𝐵 for 𝑁 × 𝑁 row-major double matrices (default 𝑁 = 1024 ) in three versions:
+1. Naive serial: the textbook i, j, k triple loop.
+2. Naive + OpenMP: the same loop with #pragma omp parallel for on the loop of your
+choice. Add a one-line comment saying which loop you parallelised, and why that choice
+causes no race on C.
+3. Tiled + OpenMP: cache-blocked with tile size 𝑇 (default 𝑇 = 64 ), parallelised over tiles
+of C.
+Check versions 2 and 3 against version 1 (max absolute difference < 10 −9). Report GFLOP/s
+= 2𝑁 3/𝑡. Use the Assignment 1 timing recipe: one untimed warm-up call, then average over at
+least 3 timed calls. State the compiler and flags you used ( -O2 vs -O3 makes a real difference, so
+the flags must be stated).
+
+A3. Thread-scaling study
+
+For the reduction dot product (A1.4) and the tiled GEMM (A2.3) , sweep OMP_NUM_THREADS
+= 1, 2, 4, 8, … up to your machine’s logical core count ( sysctl -n hw.logicalcpu on macOS,
+nproc on Linux). Write the sweep yourself, either as a shell loop or with omp_set_num_threads()
+inside the program. For each kernel, produce a table of time, speedup 𝑆(𝑝) = 𝑇 1/𝑇𝑝, and eﬀiciency
+𝐸(𝑝) = 𝑆(𝑝)/𝑝 . A plot is optional.
+Then run the optimisation loop on Part A:
+1. Measure: record the A1–A3 numbers above.
+2
+
+--- Page 3 ---
+2. Classify: say which of the two kernels in A3 stops scaling first, and why, in one sentence tied
+to arithmetic intensity and the roofline from Assignment 1. (Hint: compute the dot product’s
+FLOPs/byte.) Also say which A1 variant is slowest and which kind of overhead (serialisation
+or contention) explains it.
+3. Change one thing in the tiled GEMM: either the tile size 𝑇 (try one other value), or the
+loop order inside a tile, but not both. Before you run it, predict whether it will be faster or
+slower. Base the prediction on the working set of one tile step ( ≈ 3𝑇 2 ⋅ 8 bytes) compared
+with your CPU’s L1/L2 cache sizes, which you should look up ( sysctl hw.l1dcachesize
+hw.l2cachesize on macOS, lscpu on Linux).
+4. Re-measure: record the new GFLOP/s and state whether your prediction held.
+5. Sanity check: now build and run examples/week3_openmp/gemm and scaling.sh. Note
+whether your naive/tiled GFLOP/s and your scaling curve are in the same ballpark. If they’re
+not, explain the likely reason (flags, tile size, loop order, which loop was parallelised, thread
+placement, eﬀiciency vs performance cores on Apple Silicon, …).
+
+Part B — Build your own ring all-reduce (50 min)
+File to submit: my_allreduce.c or my_allreduce.py (mpi4py), your choice
+
+B1. Implement it
+
+Write a function ring_allreduce(buf, n, comm) that sums a length- n vector of doubles across
+all ranks in place , using only point-to-point calls : MPI_Sendrecv, or MPI_Isend/MPI_Irecv +
+MPI_Waitall. You may not call MPI_Allreduce, MPI_Reduce, or MPI_Reduce_scatter inside it.
+Use the two phases from the slides:
+• Reduce-scatter: 𝑃 − 1 steps. At each step, send one chunk to rank (rank+1) % P, receive
+one from (rank-1+P) % P, and add it into your copy.
+• All-gather: 𝑃 − 1 steps that circulate the fully reduced chunks until every rank holds the
+whole result.
+
+Your function must work when n is not divisible by P, which the class demo does not handle.
+(Hint: chunk c covers indices [c*n/P, (c+1)*n/P) with integer division.)
+
+Correctness test: fill buf with random values (seed by rank), then compare your result with
+MPI_Allreduce on a copy. Run with P = 2, 3, and 4 , and use at least one n that is not a
+multiple of P. Print the max absolute difference. It should be < 10 −10, not exactly 0, because
+floating-point addition is not associative and the library may add in a different order. Say this in
+your report.
+In one sentence in the report, explain why replacing your Sendrecv with a plain MPI_Send followed
+by MPI_Recv on every rank can deadlock for large n but appear to work for small n.
+
+
+B2. Measure it against the 𝛼–𝛽 model
+With 𝑃 = 4 , time your ring and MPI_Allreduce for message sizes 𝑛 = 2 4, 28, 212, 216, 220, 224
+doubles. Methodology: warm up, put an MPI_Barrier before each timed batch, average over many
+iterations (more for small 𝑛), and report the maximum across ranks (reduce the times with
+MPI_MAX). The slowest rank sets the step time.
+3
+
+--- Page 4 ---
+The ring’s cost model from the slides is
+𝑇ring(𝑛) ≈ 2(𝑃 − 1) 𝛼 + 2(𝑃 − 1)𝑃 (8𝑛) 𝛽.
+Estimate 𝛼 (in µs) from your smallest messages and 𝛽 (and hence effective bandwidth 1/𝛽 in
+GB/s) from your largest. Report both, and the message size at which the two terms are equal (the
+cross-over from latency-dominated to bandwidth-dominated).
+
+Then run the optimisation loop on Part B:
+
+1. Measure: the table above, for both your ring and the library.
+2. Classify: below the cross-over, which term dominates, and what does that imply for sending
+many small gradient tensors? Above the cross-over, which term dominates?
+3. Change one thing: change the rank count 𝑃 (e.g. 2 → 4 → 8; add --oversubscribe with
+Open MPI only if you must, and say so). Predict first from the model: what should happen
+to the large-message time and to the small-message time as 𝑃 grows?
+4. Re-measure: do your numbers follow the prediction? Where they don’t, explain why. (On
+one machine, the “network” is shared memory and the ranks compete for the same memory
+bandwidth and cores.)
+5. Sanity check: now run examples/week4_mpi/ring_allreduce.c. In which size range does
+MPI_Allreduce beat your ring? Suggest why (hint: “libraries switch algorithms by message
+size and topology”).
+If you truly cannot install MPI: implement B1 as a pure-NumPy simulation with a Python
+list of 𝑃 arrays, one per “rank”, passing chunks step by step exactly as the ring would. Test
+correctness against np.sum. Replace B2’s measurements with an analytic sweep of the cost model
+using 𝛼 = 2 𝜇 s and 1/𝛽 = 25 GB/s (roughly a 200 Gb/s InfiniBand link). State clearly in your
+report that you used this fallback. You lose the B2 “re-measure” points but nothing else.
+
+
+Part C — Make your own MLP data-parallel (30 min)
+File to submit: dp_mlp.py
+Start from your own mlp_from_scratch.py from Assignment 1 (forward, hand-derived backward,
+plain SGD). Make it data-parallel across 𝑃 ranks, using either mpi4py (mpirun -np 4 python3
+dp_mlp.py) or 𝑃 simulated ranks in one process if you used the Part B fallback.
+1. Same start: rank 0 initialises the weights and broadcasts them (comm.Bcast). Don’t rely
+on every rank using the same seed.
+2. Shard the batch: each rank takes a disjoint 1/P slice of every global mini-batch. Choose
+the batch size so that it divides evenly by 𝑃 .
+3. Sync gradients: after your local backward, all-reduce every gradient (use your Part B ring
+if you wrote it in Python, otherwise comm.Allreduce) and divide by 𝑃 . Then apply the SGD
+update on every rank.
+4. Prove the two claims from the slides:
+• (i) Replicas stay identical: at the end of training, gather each rank’s W1 to rank 0
+and print the max difference across ranks.
+4
+
+--- Page 5 ---
+• (ii) DP = full batch: train the same model single-process with the same global batch
+size, same initial weights, and same data order, and print the max difference in the
+per-epoch loss curves.
+In one sentence, say what would break claim (ii) if the shards were unequal in size and you still
+divided by 𝑃 .
+Part D — Scaling reality check (15 min)
+File to submit: training_cost_estimator_v2.py (extend your Assignment 1 Part B script; ~15
+new lines)
+Revisit the same real model you chose in Assignment 1 (same 𝑃params, same GPU, same utilisa-
+tion). Add a communication term:
+• Global batch 𝐺 tokens per step (pick a published value for your model family, or use 4M
+tokens, and cite it). Each of the 𝑁 GPUs processes 𝐺/𝑁 tokens per step, so 𝑇compute =
+6 ⋅ 𝑃params ⋅ (𝐺/𝑁 ) / (peak × util).
+• Gradient all-reduce per step: 𝑛 = 2 𝑃 params bytes (bf16 gradients), costed with the ring
+formula from B2. Use a published interconnect figure (cite it, e.g. 200–400 Gb/s per GPU
+InfiniBand) and, for contrast, your own measured 𝛼, 𝛽 from B2.
+• Print, for 𝑁 = 8, 64, 1024 : 𝑇compute, 𝑇comm, and the scaling eﬀiciency with no overlap , 𝐸 =
+𝑇compute/(𝑇compute + 𝑇comm), and with perfect overlap , 𝐸 = 𝑇 compute/ max(𝑇compute, 𝑇comm).
+• Re-compute your Assignment 1 “time to train on 1,024 GPUs” using the no-overlap eﬀiciency.
+Part E — Short report (25 min)
+Write 1.5–2 pages (Markdown or PDF) with these sections:
+1. Part A summary: the four dot-product results (including the racy answer across your runs)
+and timings, the three GEMM GFLOP/s numbers, your two scaling tables (or plot), and your
+change-one-thing prediction vs result, plus the sanity check.
+2. Part B summary: correctness evidence (P = 2, 3, 4 and uneven n), the deadlock sentence,
+the timing table, fitted 𝛼 and 1/𝛽, the cross-over size, the 𝑃 -change prediction vs result, and
+the sanity check.
+3. Part C summary: the two printed differences that prove claims (i) and (ii), and the unequal-
+shards sentence.
+4. Part D summary: the table for 𝑁 = 8, 64, 1024 , and your Assignment 1 estimate next to
+the corrected one.
+5. Synthesis (the actual point of this assignment): in 3–5 sentences, use evidence from
+Parts A–D to argue which single change you would try first to make your Part D model
+train eﬀiciently at 𝑁 = 1024 . Candidates include overlapping communication with back-
+ward (bucketing), a larger per-GPU batch, a faster interconnect, gradient compression, and
+sharding (ZeRO/FSDP). Also say which measurement on the real system would confirm
+it. Connect it to what you saw on one node. For example: is the A3 dot product’s roll-off
+the same kind of limit as the 𝑁 = 1024 all-reduce? There’s no single correct answer. You’re
+graded on whether the argument is evidence-based.
+5
+
+--- Page 6 ---
+Submission
+• omp_kernels.c
+• my_allreduce.c or my_allreduce.py
+• dp_mlp.py
+• training_cost_estimator_v2.py
+• report.md or report.pdf, including the exact compile and run commands you used
+Rubric (100 pts)
+Component Points What’s being checked
+Part A1: four dot-product
+variants; race shown to be
+non-deterministic and
+explained
+12 Racy answer varies between
+runs; reduction is correct and
+fastest
+Part A2: naive / OpenMP /
+tiled GEMM, verified against
+naive, correct timing
+methodology
+13 Max diff checked; warm-up +
+averaging; flags stated; no race
+on C
+Part A3: scaling study + full
+measure → classify → change
+→ re-measure cycle + sanity
+check
+15 Speedup and eﬀiciency correct;
+prediction made before the
+change; roll-off tied to
+AI/roofline
+Part B1: ring all-reduce from
+point-to-point only; correct for
+P = 2, 3, 4 and uneven n
+20 No collectives inside the
+function; matches
+MPI_Allreduce to tolerance;
+deadlock explanation
+Part B2: 𝛼–𝛽 measurement,
+𝑃 -change cycle, sanity check
+10 Max-across-ranks timing;
+plausible fit; prediction vs
+result interpreted
+Part C: data-parallel MLP
+with Bcast, sharding, gradient
+all-reduce; both claims
+demonstrated
+10 Replicas identical; DP loss
+curve matches full batch
+Part D: compute vs
+communication estimate with
+cited numbers
+5 Ring formula applied correctly;
+eﬀiciency computed both ways
+Synthesis section 10 Argument uses evidence from
+A–D rather than restating
+slide content
+Clarity / concision (report
+stays within ~2 pages)
+5 —
+6
+
